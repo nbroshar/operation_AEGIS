@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Operation Aegis — Impact Radar</title>
+<style>
+  :root{
+    --void:#070b14;      /* cold near-black: lunar south-pole shadow */
+    --void2:#0a1120;
+    --panel:#0d1524;
+    --panel2:#0b1220;
+    --grid:#16324a;      /* faint instrument grid lines */
+    --cyan:#4fd6ff;      /* data / radar / primary instrument */
+    --amber:#ffb84d;     /* caution / mission clock */
+    --green:#5dffa0;     /* nominal / locked / success */
+    --red:#ff5a6e;       /* alert / impact */
+    --ink:#d4e8ff;       /* cold white readout text */
+    --dim:#5f7da0;       /* muted labels */
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "Consolas", "DejaVu Sans Mono", monospace;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0; background:
+      radial-gradient(1200px 700px at 70% -10%, #0e1a2e 0%, transparent 60%),
+      radial-gradient(900px 600px at 0% 110%, #0b1426 0%, transparent 55%),
+      var(--void);
+    color:var(--ink); font-family:var(--mono);
+    font-size:15px; line-height:1.5; letter-spacing:.2px;
+    min-height:100vh; overflow-x:hidden;
+  }
+
+  /* CRT scanline + vignette overlay */
+  .crt{ position:fixed; inset:0; pointer-events:none; z-index:50; }
+  .crt::before{ content:""; position:absolute; inset:0;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px);
+    mix-blend-mode:multiply; opacity:.5; }
+  .crt::after{ content:""; position:absolute; inset:0;
+    box-shadow:inset 0 0 220px rgba(0,0,0,.85); }
+
+  /* ---------- top mission bar ---------- */
+  .bar{
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    padding:12px 20px; border-bottom:1px solid var(--grid);
+    background:linear-gradient(180deg, rgba(20,40,70,.35), transparent);
+  }
+  .mission{ font-weight:700; letter-spacing:6px; font-size:18px; color:var(--amber);
+    text-shadow:0 0 14px rgba(255,184,77,.45); }
+  .mission .sub{ display:block; font-size:10px; letter-spacing:3px; color:var(--dim);
+    font-weight:400; margin-top:2px; }
+  .bar .spacer{ flex:1; }
+  .readout{ font-size:12px; letter-spacing:2px; color:var(--dim); }
+  .readout b{ color:var(--cyan); font-weight:700; letter-spacing:2px; }
+  .alert{ display:flex; align-items:center; gap:8px; font-size:12px; letter-spacing:2px;
+    color:var(--red); padding:5px 12px; border:1px solid rgba(255,90,110,.4); border-radius:4px;
+    background:rgba(255,90,110,.07); }
+  .led{ width:9px; height:9px; border-radius:50%; background:var(--red);
+    box-shadow:0 0 10px var(--red); animation:blink 1.1s steps(2,end) infinite; }
+  @keyframes blink{ 50%{ opacity:.25; } }
+
+  /* ---------- dashboard grid ---------- */
+  .deck{
+    display:grid; gap:14px; padding:16px;
+    grid-template-columns: 320px minmax(0,1fr) 280px;
+    grid-template-areas:
+      "radar console rail"
+      "surface surface graph";
+    max-width:1400px; margin:0 auto;
+  }
+  @media (max-width:1080px){
+    .deck{ grid-template-columns:1fr; grid-template-areas:"console" "radar" "rail" "surface" "graph"; }
+  }
+
+  /* panel bezel — corner ticks + label, the instrument vernacular */
+  .panel{ position:relative; background:
+      linear-gradient(180deg, var(--panel), var(--panel2));
+    border:1px solid var(--grid); border-radius:8px; padding:14px;
+    opacity:0; transform:translateY(8px) scale(.99);
+    transition:opacity .5s ease, transform .5s ease; }
+  body.on .panel{ opacity:1; transform:none; }
+  body.on .panel:nth-child(1){ transition-delay:.05s; }
+  body.on .panel:nth-child(2){ transition-delay:.18s; }
+  body.on .panel:nth-child(3){ transition-delay:.31s; }
+  body.on .panel:nth-child(4){ transition-delay:.44s; }
+  body.on .panel:nth-child(5){ transition-delay:.57s; }
+  .panel::before, .panel::after{ content:""; position:absolute; width:10px; height:10px;
+    border:1px solid var(--cyan); opacity:.5; }
+  .panel::before{ top:6px; left:6px; border-right:0; border-bottom:0; }
+  .panel::after{ bottom:6px; right:6px; border-left:0; border-top:0; }
+  .plabel{ font-size:10px; letter-spacing:3px; color:var(--dim); text-transform:uppercase;
+    display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .plabel .dot{ width:6px; height:6px; border-radius:50%; background:var(--cyan);
+    box-shadow:0 0 8px var(--cyan); }
+
+  .radar-panel{ grid-area:radar; }
+  .console-panel{ grid-area:console; display:flex; flex-direction:column; min-height:420px; }
+  .rail-panel{ grid-area:rail; }
+  .surface-panel{ grid-area:surface; }
+  .graph-panel{ grid-area:graph; }
+
+  /* ---------- radar ---------- */
+  .radar{ position:relative; width:100%; aspect-ratio:1/1; border-radius:50%;
+    background:radial-gradient(circle at center, #0a1c2a 0%, #07121d 70%, #050d16 100%);
+    border:1px solid var(--grid); overflow:hidden; cursor:crosshair; }
+  .radar .ring{ position:absolute; inset:0; border-radius:50%; pointer-events:none;
+    background:
+      radial-gradient(circle, transparent 0 24%, rgba(79,214,255,.10) 24% 24.4%, transparent 24.4%),
+      radial-gradient(circle, transparent 0 49%, rgba(79,214,255,.10) 49% 49.4%, transparent 49.4%),
+      radial-gradient(circle, transparent 0 74%, rgba(79,214,255,.10) 74% 74.4%, transparent 74.4%);
+  }
+  .radar .cross{ position:absolute; inset:0; pointer-events:none;
+    background:
+      linear-gradient(90deg, transparent calc(50% - .5px), rgba(79,214,255,.10) 50%, transparent calc(50% + .5px)),
+      linear-gradient(0deg, transparent calc(50% - .5px), rgba(79,214,255,.10) 50%, transparent calc(50% + .5px)); }
+  .radar .sweep{ position:absolute; inset:0; border-radius:50%; pointer-events:none;
+    background:conic-gradient(from 0deg, rgba(79,214,255,.32), rgba(79,214,255,0) 38%);
+    animation:spin 3.4s linear infinite; mix-blend-mode:screen; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .cells{ position:absolute; inset:0; display:grid;
+    grid-template-columns:repeat(10,1fr); grid-template-rows:repeat(8,1fr); }
+  .cell{ position:relative; border:0; background:transparent; cursor:crosshair; }
+  .cell:hover{ background:rgba(79,214,255,.06); }
+  .cell .blip{ position:absolute; top:50%; left:50%; width:7px; height:7px; border-radius:50%;
+    transform:translate(-50%,-50%); background:var(--red); box-shadow:0 0 8px var(--red);
+    animation:pulseblip 1.6s ease-in-out infinite; }
+  @keyframes pulseblip{ 50%{ opacity:.35; transform:translate(-50%,-50%) scale(.7);} }
+  .reticle{ position:absolute; width:34px; height:34px; transform:translate(-50%,-50%);
+    border:1px solid var(--green); border-radius:50%; opacity:0;
+    box-shadow:0 0 14px var(--green); transition:opacity .4s; }
+  .reticle.show{ opacity:1; animation:ret 1.4s ease-in-out infinite; }
+  @keyframes ret{ 50%{ transform:translate(-50%,-50%) scale(1.12);} }
+  .reticle span{ position:absolute; left:50%; top:115%; transform:translateX(-50%);
+    white-space:nowrap; font-size:9px; letter-spacing:2px; color:var(--green); }
+  .radar-hint{ margin-top:8px; font-size:11px; color:var(--dim); letter-spacing:.4px; text-align:center; }
+
+  /* ---------- console ---------- */
+  .log{ flex:1; overflow-y:auto; padding-right:6px; font-size:14px;
+    background:rgba(0,0,0,.18); border:1px solid var(--grid); border-radius:6px; padding:12px; }
+  .log .line{ margin:0 0 7px; white-space:pre-wrap; }
+  .log .sys{ color:var(--cyan); }
+  .log .warn{ color:var(--amber); }
+  .log .ok{ color:var(--green); }
+  .log .bad{ color:var(--red); }
+  .log .note{ color:var(--ink); border-left:2px solid var(--amber); padding-left:10px;
+    background:rgba(255,184,77,.05); }
+  .log .you{ color:var(--dim); }
+  .cursor::after{ content:"▍"; color:var(--cyan); animation:blink 1s steps(2) infinite; }
+  .inputrow{ display:flex; gap:8px; margin-top:12px; }
+  .inputrow .pfx{ color:var(--cyan); align-self:center; letter-spacing:1px; }
+  #answer{ flex:1; background:#060c16; border:1px solid var(--grid); color:var(--ink);
+    font-family:var(--mono); font-size:15px; padding:10px 12px; border-radius:6px; letter-spacing:1px; }
+  #answer:focus{ outline:none; border-color:var(--cyan); box-shadow:0 0 0 1px var(--cyan); }
+  .btn{ font-family:var(--mono); font-size:12px; letter-spacing:2px; text-transform:uppercase;
+    background:transparent; color:var(--cyan); border:1px solid var(--cyan); border-radius:6px;
+    padding:0 14px; cursor:pointer; transition:.15s; }
+  .btn:hover{ background:rgba(79,214,255,.12); }
+  .btn.hint{ color:var(--amber); border-color:var(--amber); }
+  .btn.hint:hover{ background:rgba(255,184,77,.12); }
+
+  /* ---------- right rail ---------- */
+  .clockbig{ font-size:46px; letter-spacing:4px; color:var(--amber); text-align:center;
+    text-shadow:0 0 18px rgba(255,184,77,.4); margin:6px 0 2px; }
+  .clocklbl{ text-align:center; font-size:10px; letter-spacing:3px; color:var(--dim);
+    text-transform:uppercase; margin-bottom:14px; }
+  .clockbig.crit{ color:var(--red); text-shadow:0 0 18px rgba(255,90,110,.5); }
+  .shield{ text-align:center; font-size:12px; letter-spacing:2px; padding:8px; border-radius:6px;
+    border:1px solid var(--grid); color:var(--dim); margin-bottom:14px; }
+  .shield.up{ color:var(--green); border-color:var(--green); box-shadow:0 0 14px rgba(93,255,160,.25); }
+  .obj{ list-style:none; padding:0; margin:0; }
+  .obj li{ display:flex; gap:10px; align-items:flex-start; font-size:12px; letter-spacing:.5px;
+    color:var(--dim); margin-bottom:10px; }
+  .obj .box{ width:14px; height:14px; border:1px solid var(--dim); border-radius:3px; flex:none;
+    margin-top:2px; display:flex; align-items:center; justify-content:center; font-size:11px; }
+  .obj li.done{ color:var(--green); }
+  .obj li.done .box{ border-color:var(--green); color:var(--green); }
+  .obj li.active{ color:var(--ink); }
+  .obj li.active .box{ border-color:var(--cyan); box-shadow:0 0 8px rgba(79,214,255,.4); }
+
+  /* ---------- canvases ---------- */
+  .vp{ width:100%; display:block; border-radius:6px; border:1px solid var(--grid); background:#04080f; }
+  .surface-panel .vp{ height:200px; }
+  .graph-panel .vp{ height:170px; }
+
+  /* ---------- boot overlay ---------- */
+  .boot{ position:fixed; inset:0; z-index:60; background:var(--void);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:22px;
+    transition:opacity .6s; }
+  .boot.gone{ opacity:0; pointer-events:none; }
+  .boot h1{ font-size:42px; letter-spacing:14px; color:var(--amber); margin:0;
+    text-shadow:0 0 24px rgba(255,184,77,.4); }
+  .boot p{ color:var(--dim); letter-spacing:5px; font-size:12px; margin:0; }
+  .boot .go{ margin-top:10px; font-size:14px; letter-spacing:4px; padding:14px 30px;
+    color:var(--green); border:1px solid var(--green); background:transparent; border-radius:8px;
+    cursor:pointer; transition:.18s; }
+  .boot .go:hover{ background:rgba(93,255,160,.12); box-shadow:0 0 22px rgba(93,255,160,.3); }
+
+  @media (prefers-reduced-motion: reduce){
+    .sweep,.led,.cursor::after,.reticle.show,.cell .blip{ animation:none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="crt"></div>
+
+  <!-- boot / title card -->
+  <div class="boot" id="boot">
+    <p>MOON BASE ALPHA · SHACKLETON RIDGE · LUNAR SOUTH POLE</p>
+    <h1>OPERATION AEGIS</h1>
+    <p>IMPACT RADAR — STATION 6 OF 6</p>
+    <button class="go" id="go">▶ INITIALIZE CONSOLE</button>
+  </div>
+
+  <!-- top bar -->
+  <div class="bar">
+    <div class="mission">OPERATION AEGIS<span class="sub">MOON BASE ALPHA · IMPACT RADAR</span></div>
+    <div class="spacer"></div>
+    <div class="readout">MISSION CLOCK <b id="missionclock">02:45</b></div>
+    <div class="readout">HULL <b id="hull">98%</b></div>
+    <div class="alert"><span class="led"></span> METEOROID FLUX RISING</div>
+  </div>
+
+  <!-- dashboard -->
+  <div class="deck">
+
+    <!-- RADAR (interactive) -->
+    <div class="panel radar-panel">
+      <div class="plabel"><span class="dot"></span>Strike Radar · Live</div>
+      <div class="radar" id="radar">
+        <div class="ring"></div><div class="cross"></div><div class="sweep"></div>
+        <div class="cells" id="cells"></div>
+        <div class="reticle" id="reticle"><span>RADIANT</span></div>
+      </div>
+      <div class="radar-hint" id="radarhint">Tap the cell every track points away from.</div>
+    </div>
+
+    <!-- CONSOLE -->
+    <div class="panel console-panel">
+      <div class="plabel"><span class="dot"></span>Command Console</div>
+      <div class="log" id="log"></div>
+      <div class="inputrow">
+        <span class="pfx">›</span>
+        <input id="answer" autocomplete="off" spellcheck="false" placeholder="type your answer, or 'hint'…" disabled />
+        <button class="btn" id="enter">Enter</button>
+        <button class="btn hint" id="hintbtn">Hint</button>
+      </div>
+    </div>
+
+    <!-- RIGHT RAIL -->
+    <div class="panel rail-panel">
+      <div class="plabel"><span class="dot"></span>Peak Countdown</div>
+      <div class="clockbig" id="countdown">--:--</div>
+      <div class="clocklbl">until shower peak</div>
+      <div class="shield" id="shield">HULL SHIELD — STANDBY</div>
+      <div class="plabel"><span class="dot"></span>Objectives</div>
+      <ul class="obj" id="obj">
+        <li data-o="1"><span class="box"></span>Identify what is hitting us</li>
+        <li data-o="2"><span class="box"></span>Predict when it peaks</li>
+        <li data-o="3"><span class="box"></span>Lock the shield-code digit</li>
+      </ul>
+    </div>
+
+    <!-- SURFACE VIEWPORT (signature) -->
+    <div class="panel surface-panel">
+      <div class="plabel"><span class="dot"></span>Surface Viewport · Cam-3 (regolith)</div>
+      <canvas class="vp" id="surface"></canvas>
+    </div>
+
+    <!-- IMPACT RATE GRAPH -->
+    <div class="panel graph-panel">
+      <div class="plabel"><span class="dot"></span>Impact Rate · strikes / min</div>
+      <canvas class="vp" id="graph"></canvas>
+    </div>
+
+  </div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---------------- answer parsing (forgiving) ---------------- */
+function cellNorm(t){
+  const s = (t||"").replace(/[^a-z0-9]/gi,"").toUpperCase();
+  const letters = (s.match(/[A-Z]+/g)||[]).join("");
+  const digits  = (s.match(/[0-9]+/g)||[]).join("");
+  return letters + digits;
+}
+function firstInt(t){ const m = (t||"").match(/\d+/); return m ? parseInt(m[0],10) : null; }
+
+/* ---------------- console log + typewriter ---------------- */
+const logEl = $("#log");
+function rawline(cls){ const d=document.createElement("div"); d.className="line "+(cls||""); logEl.appendChild(d); return d; }
+async function say(text, cls, speed=14){
+  const d = rawline(cls); d.classList.add("cursor");
+  for(const ch of text){ d.textContent += ch; logEl.scrollTop = logEl.scrollHeight; await sleep(speed); }
+  d.classList.remove("cursor"); logEl.scrollTop = logEl.scrollHeight;
+}
+function echoYou(text){ const d=rawline("you"); d.textContent = "› "+text; logEl.scrollTop=logEl.scrollHeight; }
+
+/* ---------------- objectives ---------------- */
+function setObjective(n, state){
+  const li = document.querySelector('.obj li[data-o="'+n+'"]'); if(!li) return;
+  li.classList.remove("active","done");
+  if(state==="active"){ li.classList.add("active"); }
+  if(state==="done"){ li.classList.add("done"); li.querySelector(".box").textContent="✓"; }
+}
+
+/* ---------------- input dispatch ---------------- */
+const input = $("#answer");
+let answerCtx = null;   // {check, onWrong}
+let hintCtx = null;     // {hints, i}
+
+function enableInput(on){ input.disabled = !on; if(on){ input.focus(); } }
+
+function submitAnswer(val){
+  val = (val||"").trim(); if(!val) return;
+  if(val.toLowerCase()==="hint" || val==="?"){ giveHint(); return; }
+  echoYou(val);
+  if(answerCtx){ answerCtx.handle(val); }
+}
+function giveHint(){
+  if(!hintCtx){ return; }
+  const tip = hintCtx.hints[Math.min(hintCtx.i, hintCtx.hints.length-1)];
+  say("HINT: "+tip, "warn");
+  hintCtx.i++;
+}
+$("#enter").addEventListener("click", ()=>{ const v=input.value; input.value=""; submitAnswer(v); });
+input.addEventListener("keydown", e=>{ if(e.key==="Enter"){ const v=input.value; input.value=""; submitAnswer(v); } });
+$("#hintbtn").addEventListener("click", giveHint);
+
+/* awaitAnswer: resolves when player gives a correct answer (typed or, for radar, clicked) */
+function awaitAnswer({check, hints, success}){
+  hintCtx = { hints, i:0 };
+  return new Promise(resolve=>{
+    let wrong = 0;
+    answerCtx = { handle: async (val)=>{
+      if(check(val)){
+        answerCtx = null; enableInput(false);
+        await say(success, "ok"); resolve(val);
+      } else {
+        wrong++;
+        await say("READING DOESN'T MATCH. Re-check and try again.", "bad");
+        if(wrong % 3 === 0){ giveHint(); }
+      }
+    }};
+  });
+}
+
+/* ---------------- RADAR build ---------------- */
+const ROWS = "ABCDEFGH";
+const BLIPS = new Set(["B3","C4","D5","E6","C10","D9","E8","F1","F3","F5","F9","G6","H5","G8","H9"]);
+const RADIANT = "F7";
+const cellsEl = $("#cells");
+let radarActive = false;
+ROWS.split("").forEach((r,ri)=>{
+  for(let c=1;c<=10;c++){
+    const id = r+c;
+    const cell = document.createElement("button");
+    cell.className = "cell"; cell.dataset.id = id;
+    if(BLIPS.has(id)){ const b=document.createElement("div"); b.className="blip"; cell.appendChild(b); }
+    cell.addEventListener("click", ()=>{
+      if(!radarActive) return;
+      echoYou("RADAR ▸ "+id);
+      if(answerCtx) answerCtx.handle(id);
+    });
+    cellsEl.appendChild(cell);
+  }
+});
+function lockReticle(){
+  // F7 center: col 7 of 10, row F (index 5) of 8
+  const ret = $("#reticle");
+  ret.style.left = ((7 - 0.5)/10*100) + "%";
+  ret.style.top  = ((5 + 0.5)/8*100) + "%";
+  ret.classList.add("show");
+  $("#reticle span").textContent = "RADIANT · PERSEUS";
+}
+
+/* ---------------- global intensity (drives impacts) ---------------- */
+let intensity = 0.25;   // 0..1, ramps as the night gets worse
+let shieldUp = false;
+
+/* ---------------- SURFACE viewport ---------------- */
+const sc = $("#surface"), sx = sc.getContext("2d");
+let stars = [], flashes = [], rover = { x:-40, dir:1 };
+function fitCanvas(cv){ const r=cv.getBoundingClientRect(), d=window.devicePixelRatio||1;
+  cv.width=r.width*d; cv.height=r.height*d; cv.getContext("2d").setTransform(d,0,0,d,0,0); return r; }
+function initStars(w,h){ stars=[]; for(let i=0;i<70;i++) stars.push({x:Math.random()*w, y:Math.random()*h*0.55, b:Math.random()}); }
+let SW=0, SH=0;
+function layoutSurface(){ const r=fitCanvas(sc); SW=r.width; SH=r.height; initStars(SW,SH); }
+function drawSurface(t){
+  const horizon = SH*0.60;
+  // sky
+  sx.fillStyle = "#04080f"; sx.fillRect(0,0,SW,SH);
+  for(const s of stars){ sx.globalAlpha = 0.3 + s.b*0.7*(0.6+0.4*Math.sin(t/700+s.x)); 
+    sx.fillStyle = "#cfe6ff"; sx.fillRect(s.x, s.y, 1.4, 1.4); }
+  sx.globalAlpha = 1;
+  // Earth, low on the horizon
+  const ex = SW*0.16, ey = horizon-46, er=26;
+  const g = sx.createRadialGradient(ex-7, ey-7, 4, ex, ey, er);
+  g.addColorStop(0,"#bfe0ff"); g.addColorStop(.5,"#4f8fd6"); g.addColorStop(1,"#16407a");
+  sx.fillStyle=g; sx.beginPath(); sx.arc(ex,ey,er,0,7); sx.fill();
+  sx.globalAlpha=.18; sx.fillStyle="#0a1a30"; sx.beginPath(); sx.arc(ex+8,ey+4,er,0,7); sx.fill(); sx.globalAlpha=1;
+  // regolith
+  const rg = sx.createLinearGradient(0,horizon,0,SH);
+  rg.addColorStop(0,"#3a4150"); rg.addColorStop(1,"#1d2330");
+  sx.fillStyle=rg; sx.fillRect(0,horizon,SW,SH-horizon);
+  sx.strokeStyle="rgba(120,140,170,.25)"; sx.beginPath(); sx.moveTo(0,horizon); sx.lineTo(SW,horizon); sx.stroke();
+  // a few craters
+  sx.fillStyle="rgba(20,26,38,.6)";
+  [[SW*0.7,horizon+26,16],[SW*0.85,horizon+50,22],[SW*0.45,horizon+44,12]].forEach(([x,y,r])=>{
+    sx.beginPath(); sx.ellipse(x,y,r,r*0.4,0,0,7); sx.fill(); });
+  // rover
+  rover.x += rover.dir*0.25; if(rover.x>SW+30) rover.x=-30;
+  const ry = horizon+30, rxp=rover.x;
+  sx.fillStyle="#cfd6e0"; sx.fillRect(rxp,ry-10,30,11);
+  sx.fillStyle="#9aa6b6"; sx.fillRect(rxp+4,ry-20,3,11); // mast
+  sx.beginPath(); sx.arc(rxp+6,ry-21,4,0,7); sx.fill();   // dish
+  sx.fillStyle="#2b3340"; [4,14,24].forEach(dx=>{ sx.beginPath(); sx.arc(rxp+dx,ry+2,3.4,0,7); sx.fill(); });
+  // impact flashes on the regolith (frequency tied to intensity)
+  if(Math.random() < intensity*0.10 && !shieldUp){
+    flashes.push({ x:Math.random()*SW, y:horizon+8+Math.random()*(SH-horizon-12), life:1 });
+  }
+  for(let i=flashes.length-1;i>=0;i--){ const f=flashes[i]; f.life-=0.05;
+    if(f.life<=0){ flashes.splice(i,1); continue; }
+    sx.globalAlpha=f.life; sx.fillStyle="#fff2d0";
+    sx.beginPath(); sx.arc(f.x,f.y, 10*(1-f.life)+2, 0,7); sx.fill();
+    sx.strokeStyle="rgba(255,184,77,"+f.life+")"; sx.lineWidth=1.5;
+    sx.beginPath(); sx.arc(f.x,f.y, 16*(1-f.life)+4,0,7); sx.stroke(); sx.globalAlpha=1;
+  }
+  // shield dome at victory
+  if(shieldUp){
+    sx.strokeStyle="rgba(93,255,160,.55)"; sx.lineWidth=2;
+    sx.beginPath(); sx.arc(SW*0.62, horizon+90, 150, Math.PI, 2*Math.PI); sx.stroke();
+    sx.strokeStyle="rgba(93,255,160,.15)"; sx.lineWidth=10;
+    sx.beginPath(); sx.arc(SW*0.62, horizon+90, 150, Math.PI, 2*Math.PI); sx.stroke();
+  }
+}
+
+/* ---------------- IMPACT RATE graph ---------------- */
+const gc = $("#graph"), gx = gc.getContext("2d");
+let GW=0, GH=0, graphProgress=0, graphReveal=false;
+const RATE = [ {t:"02:00",v:10},{t:"02:15",v:18},{t:"02:30",v:31},{t:"02:45",v:52} ];
+function layoutGraph(){ const r=fitCanvas(gc); GW=r.width; GH=r.height; }
+function drawGraph(){
+  gx.clearRect(0,0,GW,GH);
+  const padL=34, padB=22, padT=14, padR=14;
+  const x0=padL, x1=GW-padR, y0=GH-padB, y1=padT;
+  const maxV=90;
+  // grid
+  gx.strokeStyle="rgba(22,50,74,.9)"; gx.lineWidth=1;
+  for(let i=0;i<=3;i++){ const y=y0+(y1-y0)*i/3; gx.beginPath(); gx.moveTo(x0,y); gx.lineTo(x1,y); gx.stroke();
+    gx.fillStyle="#5f7da0"; gx.font="9px monospace"; gx.fillText(String(Math.round(maxV*i/3)), 6, y+3); }
+  const px = i => x0 + (x1-x0)*i/(RATE.length+1);
+  const py = v => y0 + (y1-y0)*(v/maxV);
+  // measured rising trace
+  const shown = graphReveal ? Math.min(RATE.length, 1+graphProgress*RATE.length) : 0;
+  gx.strokeStyle="#4fd6ff"; gx.lineWidth=2; gx.beginPath();
+  for(let i=0;i<RATE.length;i++){ if(i+1>shown) break; const X=px(i+1), Y=py(RATE[i].v);
+    i===0?gx.moveTo(X,Y):gx.lineTo(X,Y); }
+  gx.stroke();
+  for(let i=0;i<RATE.length;i++){ if(i+1>shown) break; const X=px(i+1), Y=py(RATE[i].v);
+    gx.fillStyle="#4fd6ff"; gx.beginPath(); gx.arc(X,Y,3,0,7); gx.fill();
+    gx.fillStyle="#5f7da0"; gx.font="8px monospace"; gx.fillText(RATE[i].t, X-14, GH-8); }
+  // projected dashed climb to the peak marker (after reveal completes)
+  if(graphReveal && graphProgress>=1){
+    gx.setLineDash([4,4]); gx.strokeStyle="rgba(255,184,77,.7)"; gx.beginPath();
+    gx.moveTo(px(RATE.length), py(52)); gx.lineTo(px(RATE.length+1), py(85)); gx.stroke(); gx.setLineDash([]);
+    const PX=px(RATE.length+1), PY=py(85);
+    gx.fillStyle="#ffb84d"; gx.beginPath(); gx.arc(PX,PY,3.5,0,7); gx.fill();
+    gx.fillText("PEAK 03:00", PX-44, PY-6);
+  }
+}
+
+/* ---------------- master animation loop ---------------- */
+function loop(t){
+  drawSurface(t);
+  if(graphReveal && graphProgress<1){ graphProgress += 0.02; }
+  drawGraph();
+  requestAnimationFrame(loop);
+}
+
+/* ---------------- countdown ---------------- */
+let cdSeconds = null, cdTimer = null;
+function startCountdown(mins){
+  cdSeconds = mins*60;
+  const el = $("#countdown");
+  cdTimer = setInterval(()=>{
+    if(shieldUp){ clearInterval(cdTimer); return; }
+    cdSeconds = Math.max(0, cdSeconds-1);
+    const m = String(Math.floor(cdSeconds/60)).padStart(2,"0");
+    const s = String(cdSeconds%60).padStart(2,"0");
+    el.textContent = m+":"+s;
+    if(cdSeconds<=300){ el.classList.add("crit"); }
+    if(cdSeconds<=0){ clearInterval(cdTimer); }
+  }, 1000);
+}
+
+/* ================= GAME FLOW ================= */
+async function run(){
+  await say("MOON BASE ALPHA // night-shift console online.", "sys");
+  await say("ALERT: meteoroid flux on the outer hull is climbing. Fast.", "warn");
+  await say("Senior crew is out on the traverse — out of contact. You have the radar.", "sys");
+  await sleep(300);
+  await say('A note is pinned here, in old handwriting:', "sys");
+  await say('"If the rate is rising, don\'t panic. Confirm what it is, find when it peaks, raise the shield. You can do this.  — V. L."', "note");
+  await sleep(300);
+
+  /* ---- STEP 1: radiant ---- */
+  setObjective(1,"active");
+  await say("STEP 1 — Every strike on the radar streams away from ONE point. Find it: that point is the RADIANT.", "sys");
+  await say("Trace the tracks back and tap the cell they all point away from.", "sys");
+  radarActive = true; enableInput(true);
+  $("#radarhint").style.color = "var(--cyan)";
+  await awaitAnswer({
+    check: v => cellNorm(v) === RADIANT,
+    hints: [
+      "Pick any red blip and follow its line of blips back toward the middle.",
+      "All the rays meet in the lower-middle of the grid — row F.",
+      "Count columns to the center of row F: it's F7."
+    ],
+    success: "RADIANT LOCKED. Cross-referencing star chart… origin = constellation PERSEUS. CONFIRMED: these are the PERSEIDS. Not space junk."
+  });
+  radarActive=false; lockReticle(); $("#radarhint").textContent="Radiant locked · Perseus";
+  setObjective(1,"done"); intensity=0.5;
+
+  /* ---- STEP 2: peak ---- */
+  setObjective(2,"active");
+  await say("STEP 2 — A shower peaks as we plow through the THICKEST part of the comet's dust trail. Dr. Leavitt's model is loaded:", "sys");
+  await say("  entered the dense stream …… 02:00\n  will exit the dense stream … 04:00\n  the stream is symmetric — thickest dead center.", "sys");
+  graphReveal = true;
+  await say("Watch the rate climb on the graph. What TIME is the peak — the exact center between entering and exiting?", "sys");
+  enableInput(true);
+  await awaitAnswer({
+    check: v => firstInt(v) === 3,
+    hints: [
+      "The center is halfway between 02:00 and 04:00.",
+      "Halfway between 2 o'clock and 4 o'clock…",
+      "It's 03:00."
+    ],
+    success: "PEAK CONFIRMED: 03:00. That's our deadline."
+  });
+  await say("It's 02:45 now. How many MINUTES until 03:00?", "sys");
+  enableInput(true);
+  await awaitAnswer({
+    check: v => firstInt(v) === 15,
+    hints: [ "Count from :45 up to the next :00.", "A quarter of an hour.", "It's 15 minutes." ],
+    success: "COUNTDOWN ARMED. Shield must be up before the peak."
+  });
+  startCountdown(15); intensity=0.78;
+  setObjective(2,"done");
+
+  /* ---- STEP 3: shield digit ---- */
+  setObjective(3,"active");
+  await say("STEP 3 — The hull shield needs a 6-digit code: one digit per station. Dr. Leavitt's protocol sets this one:", "sys");
+  await say('"Station 6 digit = the PEAK HOUR you just found."', "note");
+  await say("Enter the peak HOUR to lock your digit.", "sys");
+  enableInput(true);
+  await awaitAnswer({
+    check: v => firstInt(v) === 3,
+    hints: [ "The peak was 03:00 — the hour is the first number.", "03:00 → hour is 3.", "Enter 3." ],
+    success: "DIGIT LOCKED."
+  });
+  setObjective(3,"done");
+
+  /* ---- VICTORY ---- */
+  shieldUp = true; flashes.length = 0;
+  $("#shield").textContent = "HULL SHIELD — RAISED"; $("#shield").classList.add("up");
+  await say("══════════════════════════════", "ok");
+  await say("STATION 6 SHIELD-CODE DIGIT = 3", "ok");
+  await say("══════════════════════════════", "ok");
+  await say("Write this digit on your team card and carry it to COMMAND.", "sys");
+  await say('Final note, same handwriting: "Six locks, six keys. No one believed the rate would spike this high — but the data did. Trust the data. Bring all six digits together and raise the shield.  — V. L."', "note");
+  await say("Nicely flown. Now help the others — the peak won't wait.", "ok");
+}
+
+/* ---------------- boot ---------------- */
+function startConsole(){
+  $("#boot").classList.add("gone");
+  document.body.classList.add("on");
+  layoutSurface(); layoutGraph();
+  requestAnimationFrame(loop);
+  setTimeout(run, 700);
+}
+$("#go").addEventListener("click", startConsole);
+window.addEventListener("resize", ()=>{ layoutSurface(); layoutGraph(); });
+</script>
+</body>
+</html>
